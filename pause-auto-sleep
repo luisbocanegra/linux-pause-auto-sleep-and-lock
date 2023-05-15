@@ -1,0 +1,116 @@
+#!/usr/bin/python
+# coding=utf-8
+# Pause auto sleep and screen locking
+# Author: Luis Bocanegra
+# repo: https://github.com/luisbocanegra/linux-pause-auto-sleep-and-lock
+# based on https://gist.github.com/fxthomas/9bdfadd972eaf7100b374042faac28c2
+
+# Usage with application + reason:
+# pause-auto-sleep "application_name or desktop.entry.name" "reason_for_inhibit"
+
+# To show the app icon and name in the Plasma's Battery and Brightness widget:
+# "application_name" should be set to the program name or desktop entry name.
+# To get a program desktop entry name use the following command
+# ls /usr/share/applications .local/share/applications/ | grep -i YOUR_PROGRAM_NAME
+
+# Example: pause-auto-sleep org.kde.konsole ssh
+
+
+# Usage without arguments (Toggle mode):
+
+# When running without arguments:
+# - application willl be set as "User"
+# - reason will be set as "Manually enabled"
+# If the script is run a second time,
+# it will look for existing inhibitor process and stop it, ending the inhibition
+
+import subprocess
+import dbus
+import sys
+import os
+import signal
+import logging
+
+logging.root.setLevel(logging.DEBUG)
+
+
+def exit_message(sig, frame):
+    logging.info("Inhibition stopped bye!")
+    sys.exit(0)
+
+
+def get_instance_pid():
+    """Get pid of active inhibition instance
+
+    Returns:
+        str: PID, empty if not found
+    """
+    home_dir = os.path.expanduser("~")
+    location = os.path.join(home_dir, ".local/bin/pause-auto-sleep")
+    if location != sys.argv[0]:
+        logging.error(
+            f"Script is not in/wasn't run from correct location\n"
+            + f"Current command:\n{sys.argv[0]}\n"
+            + f"Expected command\n{location} OR pause-auto-sleep"
+        )
+        exit(1)
+    logging.debug(f"script location: {location}")
+    pid = ""
+    try:
+        pid = subprocess.check_output(
+            "ps -e -f | grep " + location + "$ | head -n1 | awk '{print $2}'",
+            shell=True,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        ).strip()
+    except subprocess.CalledProcessError as e:
+        logging.error(e.output)
+    finally:
+        return pid
+
+
+def kill_existing(pid):
+    """Kill process by its PID
+
+    Args:
+        pid (str): PID
+    """
+    logging.warning(f"Found previous inhibition process with PID: '{pid}' killing...")
+    subprocess.Popen("kill -9 " + str(pid), shell=True)
+
+
+def set_inhibit(inhibitor: str, reason: str):
+    """Start locking sleep and screen locking
+
+    Args:
+        inhibitor (str): App or desktop entry name
+        reason (str): Reason to block
+    """
+    bus = dbus.SessionBus()
+    proxy = bus.get_object(
+        "org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver"
+    )
+    iface = dbus.Interface(proxy, "org.freedesktop.ScreenSaver")
+
+    iface.Inhibit(inhibitor, reason)
+    logging.info("Blocking sleep and screen locking (pid: %d)" % os.getpid())
+    logging.info("By: %s" % inhibitor)
+    logging.info("Reason: %s" % reason)
+
+
+last_pid = get_instance_pid()
+current_pid = str(os.getpid())
+logging.debug(f"existing: {last_pid}  current: {current_pid}")
+logging.debug(f"args: {sys.argv[1:]}")
+# kill existing if exists when there's no arguments
+if last_pid != current_pid and len(sys.argv) < 2:
+    kill_existing(last_pid)
+else:
+    if len(sys.argv) > 1:
+        inhibitor, reason = " ".join(sys.argv[1:2]), " ".join(sys.argv[2:])
+    else:
+        inhibitor, reason = "User", "Manually enabled"
+    set_inhibit(inhibitor, reason)
+    # Wait until termination
+    signal.signal(signal.SIGINT, exit_message)
+    signal.pause()
